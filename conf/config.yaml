@@ -11,7 +11,7 @@ training:
   matmul_precision: high 
   max_iterations: 300000
   batch_size: 8
-  num_workers: 8
+  num_workers: 5
   gpu_id: 0
   freeze_encoder: True
   seed: 0
@@ -40,7 +40,7 @@ noise_scheduler:
   beta_end: 0.2
 
 dataset:
-  name: co3d
+  name: megadepth
   category: "all_train"
   apply_augmentation: False
 
