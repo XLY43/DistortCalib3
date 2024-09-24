@@ -5,8 +5,6 @@
 [[`Bibtex`](#citing-cameras-as-rays)]
 [[`Colab`](https://colab.research.google.com/drive/1dqp9qnFyHA71y3motSoJpJFBHZVftXzb?usp=sharing)]
 
-This repository contains code for "Cameras as Rays: Pose Estimation via Ray Diffusion" (ICLR 2024).
-
 Clone the repository:
 ```
 git clone --depth=1 --branch=main https://github.com/jasonyzhang/RayDiffusion.git
