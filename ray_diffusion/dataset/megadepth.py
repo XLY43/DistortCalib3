@@ -1,29 +1,26 @@
-#!/usr/bin/env python3
-
-import os
-import re
-import bz2
-import glob
+import os, io, glob, natsort, random
+import h5py
 import torch
-import pickle
 import numpy as np
-import random
-
-import kornia
-from os import path
 from PIL import Image
-from copy import copy
-from torch.utils.data import Sampler
-from torch.utils.data import Dataset
 from torchvision import transforms
-from scipy.spatial.transform import Rotation as R
-from torchvision.transforms import functional as F
-
-from ray_diffusion.dataset.distortion_pattern.augment_distortion import augment_distortion, generatepindata, _crop_flow
-from ray_diffusion.dataset.distortion_pattern.distortion_model import distortionModel, distortionParameter
-from ray_diffusion.dataset.distortion_pattern.fisheye import RandomFisheye
+from torch.utils.data import Dataset
 from kornia.augmentation import AugmentationSequential
+from ray_diffusion.dataset.distortion_pattern.fisheye import RandomFisheye
+import kornia 
 
+TEST_CATEGORIES = [
+    "0000",
+    "0020",
+    "0100",
+    "0200",
+    "0240",
+    "0402",
+    "1001",
+    "5000",
+    "0860",
+    "1589",
+]
 
 def square_bbox(bbox, padding=0.0, astype=None):
     """
@@ -45,60 +42,70 @@ def square_bbox(bbox, padding=0.0, astype=None):
     )
     return square_bbox
 
+def _transform_intrinsic(image, bbox, principal_point, focal_length):
+    # Rescale intrinsics to match bbox
+    half_box = np.array([image.width, image.height]).astype(np.float32) / 2
+    org_scale = min(half_box).astype(np.float32)
 
-class TartanAir(Dataset):
-    def __init__(self, 
-                root="/ocean/projects/cis240055p/liuyuex/gemma/datasets/tartanair", 
-                catalog_path="/ocean/projects/cis240055p/liuyuex/gemma/datasets/tartanair/.cache/tartanair-sequences.pbz2", 
-                scale=1, 
-                img_size=448, 
-                augment=True, 
-                exclude=None, 
-                include=None):
-        super().__init__()
-        self.img_size = img_size
-        # self.augment = AirAugment(scale, size=[480, 640], resize_only=not augment)
-        if catalog_path is not None and os.path.exists(catalog_path):
-            with bz2.BZ2File(catalog_path, 'rb') as f:
-                self.sequences, self.image, self.poses, self.sizes = pickle.load(f)
+    # Pixel coordinates
+    principal_point_px = half_box - (np.array(principal_point) * org_scale)
+    focal_length_px = np.array(focal_length) * org_scale
+    principal_point_px -= bbox[:2]
+    new_bbox = (bbox[2:] - bbox[:2]) / 2
+    new_scale = min(new_bbox)
+
+    # NDC coordinates
+    new_principal_ndc = (new_bbox - principal_point_px) / new_scale
+    new_focal_ndc = focal_length_px / new_scale
+
+    principal_point = torch.tensor(new_principal_ndc.astype(np.float32))
+    focal_length = torch.tensor(new_focal_ndc.astype(np.float32))
+
+    return principal_point, focal_length
+
+class MegaDepth(Dataset):
+    def __init__(self, data_root="/ocean/projects/cis240055p/liuyuex/gemma/datasets/wildcamera/MonoCalib/MegaDepth/intrinsics", 
+            img_size=448,
+            shuffleseed=None, 
+            split='train') -> None:
+        
+        data_names = glob.glob(os.path.join(data_root, '*.npz'))
+
+        if split == 'train':
+            data_names = [x for x in data_names if not any([cat in x for cat in TEST_CATEGORIES])]
+            if shuffleseed is not None:
+                random.seed(shuffleseed)
+            random.shuffle(data_names)
         else:
-            self.sequences = glob.glob(os.path.join(root,'*','[EH]a[sr][yd]','*'))
-            self.image, self.poses, self.sizes = {}, {}, []
-            ned2den = torch.FloatTensor([[0, 1, 0], [0, 0, 1], [1, 0, 0]])
-            for seq in self.sequences:
-                quaternion = np.loadtxt(path.join(seq, 'pose_left.txt'), dtype=np.float32)
-                self.poses[seq] = ned2den @ pose2mat(quaternion)
-                self.image[seq] = sorted(glob.glob(path.join(seq,'image_left','*.png')))
-                assert(len(self.image[seq])==self.poses[seq].shape[0])
-                self.sizes.append(len(self.image[seq]))
-            # import pdb; pdb.set_trace()
-            os.makedirs(os.path.dirname(catalog_path), exist_ok=True)
-            with bz2.BZ2File(catalog_path, 'wb') as f:
-                pickle.dump((self.sequences, self.image, self.poses, self.sizes), f)
-        # Camera Intrinsics of TartanAir Dataset
-        fx, fy, cx, cy = 320, 320, 320, 240
-        self.K = torch.FloatTensor([[fx, 0, cx, 0], [0, fy, cy, 0], [0, 0, 0, 1], [0, 0, 1, 0]])
+            data_names = [x for x in data_names if any([cat in x for cat in TEST_CATEGORIES])]
 
-        # include/exclude seq with regex
-        incl_pattern = re.compile(include) if include is not None else None
-        excl_pattern = re.compile(exclude) if exclude is not None else None
-        final_list = []
-        for seq, size in zip(self.sequences, self.sizes):
-            if (incl_pattern and incl_pattern.search(seq) is None) or \
-                    (excl_pattern and excl_pattern.search(seq) is not None):
-                del self.poses[seq], self.image[seq]
-            else:
-                final_list.append((seq, size))
-        self.sequences, self.sizes = zip(*final_list) if len(final_list) > 0 else ([], [])
+        data_names_clean = []
+        for idx in range(len(data_names)-1):
+            intrinsics_path = data_names[idx]
+            intrinsics = dict(np.load(intrinsics_path, allow_pickle=True))['intrinsics'].item()
+            if len(intrinsics.keys()) != 0:
+                data_names_clean.append(intrinsics_path)
 
-        # simple base transforms
+        self.data_root = data_root
         self.transform = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Resize(self.img_size, antialias=True),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-            ]
-        )
+                [
+                    transforms.ToTensor(),
+                    transforms.Resize(img_size, antialias=True),
+                    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+                ]
+            )
+
+        self.data_names = data_names_clean
+        self.img_size = img_size
+        self.num_to_load = 8
+        self.datasetname = 'MegaDepth'
+
+    def __len__(self):
+        return len(self.data_names)
+
+    def load_im(self, im_ref):
+        im = Image.open(im_ref)
+        return im
 
     def _crop_image(self, image, bbox):
         image_crop = transforms.functional.crop(
@@ -135,30 +142,32 @@ class TartanAir(Dataset):
         T_pytorch3d[:2] *= -1
         return R_pytorch3d, T_pytorch3d, focal_pytorch3d, p0_pytorch3d, image_shape
 
-    def __len__(self):
-        return len(self.sizes)
+    def __getitem__(self, idx):
+        intrinsics_path = self.data_names[idx]
+        poses_path = intrinsics_path.replace('intrinsics', 'poses')
+        rgb_path = intrinsics_path.replace('intrinsics', 'rgb')
 
-    def __getitem__(self, index):
-        seq, K = self.sequences[index], self.K
+        intrinsics = dict(np.load(intrinsics_path, allow_pickle=True))['intrinsics'].item()
+        poses = dict(np.load(poses_path, allow_pickle=True))['extrinsics'].item()
+        rgbs = dict(np.load(rgb_path, allow_pickle=True))['rgb'].item()
 
-        num_to_load = 8
+        ids = np.random.choice(len(intrinsics.keys()), self.num_to_load, replace=False)
 
-        frames = np.random.choice(len(self.image[seq]), num_to_load, replace=False)
-
+        # Read image & camera information from annotations
         images = []
         images_d = []
         flows = []
-        poses = []
+        image_sizes = []
         PP = []
         FL = []
         R = []
         T = []
-        image_sizes = []
         crop_parameters = []
         filenames = []
 
-        # define augmentation
         aug_type = random.choice(["barrel", "pincushion", "perspective"])
+
+        # distort_grid = get_grid(aug_type)
         if aug_type == "barrel":
             center_x = torch.tensor([0.0, 0.0])
             center_y = torch.tensor([0.0, 0.0])
@@ -180,10 +189,14 @@ class TartanAir(Dataset):
                 kornia.augmentation.Resize(size=(self.img_size, self.img_size), keepdim=True),
                 data_keys=["input", "keypoints"], 
                 same_on_batch=True)
-
-        for frame in frames:
-            image = Image.open(self.image[seq][frame])
-
+        
+        frames = [*intrinsics.keys()]
+        for id in ids:
+            frame_name = frames[id]
+            K = torch.from_numpy(intrinsics[frame_name]).float()
+            pose = torch.from_numpy(poses[frame_name]).float()
+            image = self.load_im(rgbs[frame_name])
+            
             bbox_init = [0, 0, image.width, image.height]
             bbox = square_bbox(np.array(bbox_init))
 
@@ -199,7 +212,6 @@ class TartanAir(Dataset):
             crop_width = 2 * s * (bbox[2] - bbox[0]) / length
             crop_params = torch.tensor([-cc[0], -cc[1], crop_width, s])
 
-            pose = self.poses[seq][frame]
             R_pytorch3d, T_pytorch3d, focal_pytorch3d, p0_pytorch3d, image_shape = self._opencv_camera2pytorch3d(pose, K, [width, height])
             p0_pytorch3d, focal_pytorch3d = _transform_intrinsic(image, bbox, p0_pytorch3d, focal_pytorch3d)
 
@@ -228,12 +240,6 @@ class TartanAir(Dataset):
                 flow = (warped_grid - grid).reshape(1, self.img_size, self.img_size, 2)
                 image_distort = image_distort.squeeze(0)
                 flow = flow.squeeze(0).permute(2, 0, 1)
-            
-            # import pdb; pdb.set_trace()
-            # torchvision.utils.save_image(image[:, :, :], "image.png")
-            # torchvision.utils.save_image(image_distort[:, :, :], "image_d.png")
-            # flow_img = torchvision.utils.flow_to_image(flow)
-            # torchvision.io.write_png(flow_img, "image_flow.png")
 
             images.append(image[:, : self.img_size, : self.img_size]) # [3, 448, 448]
             images_d.append(image_distort[:, : self.img_size, : self.img_size])
@@ -245,23 +251,23 @@ class TartanAir(Dataset):
             image_sizes.append(torch.tensor([self.img_size, self.img_size]))
             crop_parameters.append(crop_params)
 
-            filenames.append(self.image[seq][frame])
-
+            filenames.append(frame_name)
+            
         images = torch.stack(images)
         images_d = torch.stack(images_d)
         flows = torch.stack(flows)
+        crop_parameters = torch.stack(crop_parameters)
         R = torch.stack(R)
         T = torch.stack(T)
         PP = torch.stack(PP)
         FL = torch.stack(FL)
         image_sizes = torch.stack(image_sizes)
-        crop_parameters = torch.stack(crop_parameters)
-        
+
         batch = {
-            "model_id": seq,
-            "category": seq.split('/')[-3],
-            "n": len(self.image[seq]),
-            "ind": torch.tensor(frames),
+            "model_id": self.data_names[idx],
+            "category": self.data_names[idx].split('/')[-1][:-4],
+            "n": len(frames),
+            "ind": torch.tensor(ids),
             "image": images,
             "image_d": images_d,
             "flow": flows,
@@ -274,46 +280,3 @@ class TartanAir(Dataset):
             "filename": filenames,
         }
         return batch
-
-    def rand_split(self, ratio, seed=42):
-        total, ratio = len(self.sequences), np.array(ratio)
-        split_idx = np.cumsum(np.round(ratio / sum(ratio) * total), dtype=np.int)[:-1]
-        subsets = []
-        for perm in np.split(np.random.default_rng(seed=seed).permutation(total), split_idx):
-            subset = copy(self)
-            subset.sequences = np.take(self.sequences, perm).tolist()
-            subset.sizes = np.take(self.sizes, perm).tolist()
-            subsets.append(subset)
-        return subsets
-
-
-class AirSampler(Sampler):
-    def __init__(self, data, batch_size, shuffle=True, overlap=True):
-        self.data_sizes = data.sizes
-        self.bs = batch_size
-        self.shuffle = shuffle
-        self.batches = []
-        for i, size in enumerate(self.data_sizes):
-            b_start = np.arange(0, size - self.bs, 1 if overlap else self.bs)
-            self.batches += [list(zip([i]*self.bs, range(st, st+self.bs))) for st in b_start]
-        if self.shuffle: np.random.shuffle(self.batches)
-
-    def __iter__(self):
-        return iter(self.batches)
-
-    def __len__(self):
-        return len(self.batches)
-
-
-def pose2mat(pose):
-    """Converts pose vectors to matrices.
-    Args:
-      pose: [tx, ty, tz, qx, qy, qz, qw] (N, 7).
-    Returns:
-      [R t] (N, 3, 4).
-    """
-    t = pose[:, 0:3, None]
-    rot = R.from_quat(pose[:, 3:7]).as_matrix().astype(np.float32).transpose(0, 2, 1)
-    t = -rot @ t
-    return torch.cat([torch.from_numpy(rot), torch.from_numpy(t)], dim=2)
-

@@ -22,6 +22,7 @@ from pytorch3d.renderer import PerspectiveCameras
 import wandb
 from ray_diffusion.dataset.co3d_v2 import Co3dDataset
 from ray_diffusion.dataset.tartanair import TartanAir, AirSampler
+from ray_diffusion.dataset.megadepth import MegaDepth
 from ray_diffusion.model.diffuser import RayDiffuser
 from ray_diffusion.model.scheduler import NoiseScheduler
 from ray_diffusion.utils.normalize import normalize_cameras_batch
@@ -130,17 +131,20 @@ class Trainer(object):
                 pin_memory=True,
                 drop_last=True,
             )
-        else:
+        elif self.dataset_name == "tartanair":
             self.dataset = TartanAir(scale=1, augment=True)
-            # self.sampler = AirSampler(self.dataset, 
-            #     batch_size=self.batch_size, 
-            #     shuffle=True)
-            # self.train_dataloader = torch.utils.data.DataLoader(
-            #     self.dataset,
-            #     batch_sampler=self.sampler,
-            #     num_workers=cfg.training.num_workers,
-            #     pin_memory=True,
-            # )
+            self.train_dataloader = torch.utils.data.DataLoader(
+                self.dataset,
+                batch_size=self.batch_size,
+                shuffle=True,
+                num_workers=cfg.training.num_workers,
+                pin_memory=True,
+                drop_last=True,
+            )
+        elif self.dataset_name == "megadepth":
+            self.dataset = MegaDepth(
+                split="train",
+            )
             self.train_dataloader = torch.utils.data.DataLoader(
                 self.dataset,
                 batch_size=self.batch_size,
@@ -264,22 +268,6 @@ class Trainer(object):
                         )
                         for b in range(self.batch_size)
                     ]
-                    # else:
-                    #     Ks = batch["Ks"].to(self.device)
-                    #     crop_params = batch["crop_parameters"].to(self.device)
-                    #     R = batch["R"].to(self.device)
-                    #     T = batch["T"].to(self.device)
-                    #     flows = batch["flow"].to(self.device)
-                    #     cameras_og = [
-                    #         PerspectiveCameras(
-                    #             K=Ks[b],
-                    #             R=R[b],
-                    #             T=T[b],
-                    #             device=self.device,
-                    #         )
-                    #         for b in range(self.batch_size)
-                    #     ]
-                    #     # import pdb; pdb.set_trace()
 
                     if self.num_images == 1:
                         cameras = cameras_og

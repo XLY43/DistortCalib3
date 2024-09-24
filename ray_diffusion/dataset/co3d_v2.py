@@ -12,8 +12,8 @@ from PIL import Image, ImageFile
 from pytorch3d.renderer import PerspectiveCameras
 from torch.utils.data import Dataset
 from torchvision import transforms
-from ray_diffusion.dataset.distortion_pattern.augment_distortion import augment_distortion, generatepindata, _crop_flow
-from ray_diffusion.dataset.distortion_pattern.distortion_model import distortionModel, distortionParameter
+# from ray_diffusion.dataset.distortion_pattern.augment_distortion import augment_distortion, generatepindata, _crop_flow
+# from ray_diffusion.dataset.distortion_pattern.distortion_model import distortionModel, distortionParameter
 from ray_diffusion.dataset.distortion_pattern.fisheye import RandomFisheye
 from kornia.augmentation import AugmentationSequential
 import kornia 
@@ -482,6 +482,7 @@ class Co3dDataset(Dataset):
 
                 principal_point = torch.tensor(anno["principal_point"])
                 focal_length = torch.tensor(anno["focal_length"])
+                principal_point, focal_length = _transform_intrinsic(image, bbox, principal_point, focal_length)
 
                 # Crop and normalize image
                 image = self._crop_image(image, bbox)
