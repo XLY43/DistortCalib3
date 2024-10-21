@@ -1,4 +1,4 @@
-# Cameras as Rays
+# Foundational Camera for intrinsics and extrinsics prediction
 
 [[`arXiv`](https://arxiv.org/abs/2402.14817)]
 [[`Project Page`](https://jasonyzhang.com/RayDiffusion/)]
