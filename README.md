@@ -1,10 +1,5 @@
 # Foundational Camera for intrinsics and extrinsics prediction
 
-[[`arXiv`](https://arxiv.org/abs/2402.14817)]
-[[`Project Page`](https://jasonyzhang.com/RayDiffusion/)]
-[[`Bibtex`](#citing-cameras-as-rays)]
-[[`Colab`](https://colab.research.google.com/drive/1dqp9qnFyHA71y3motSoJpJFBHZVftXzb?usp=sharing)]
-
 Clone the repository:
 ```
 git clone --depth=1 --branch=main https://github.com/jasonyzhang/RayDiffusion.git
@@ -69,17 +64,3 @@ See [docs/train.md](docs/train.md) for more detailed instructions on training.
 ## Evaluation
 
 See [docs/eval.md](docs/eval.md) for instructions on how to run evaluation code.
-
-
-## Citing Cameras as Rays
-
-If you find this code helpful, please cite:
-
-```
-@InProceedings{zhang2024raydiffusion,
-    title={Cameras as Rays: Pose Estimation via Ray Diffusion},
-    author={Zhang, Jason Y and Lin, Amy and Kumar, Moneish and Yang, Tzu-Hsuan and Ramanan, Deva and Tulsiani, Shubham},
-    booktitle={International Conference on Learning Representations (ICLR)},
-    year={2024}
-}
-```
