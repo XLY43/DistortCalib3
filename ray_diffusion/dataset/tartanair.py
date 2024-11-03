@@ -45,7 +45,27 @@ def square_bbox(bbox, padding=0.0, astype=None):
     )
     return square_bbox
 
+def _transform_intrinsic(image, bbox, principal_point, focal_length):
+    # Rescale intrinsics to match bbox
+    half_box = np.array([image.width, image.height]).astype(np.float32) / 2
+    org_scale = min(half_box).astype(np.float32)
 
+    # Pixel coordinates
+    principal_point_px = half_box - (np.array(principal_point) * org_scale)
+    focal_length_px = np.array(focal_length) * org_scale
+    principal_point_px -= bbox[:2]
+    new_bbox = (bbox[2:] - bbox[:2]) / 2
+    new_scale = min(new_bbox)
+
+    # NDC coordinates
+    new_principal_ndc = (new_bbox - principal_point_px) / new_scale
+    new_focal_ndc = focal_length_px / new_scale
+
+    principal_point = torch.tensor(new_principal_ndc.astype(np.float32))
+    focal_length = torch.tensor(new_focal_ndc.astype(np.float32))
+
+    return principal_point, focal_length
+    
 class TartanAir(Dataset):
     def __init__(self, 
                 root="/ocean/projects/cis240055p/liuyuex/gemma/datasets/tartanair", 

@@ -27,6 +27,7 @@ def predict_cameras(
     max_num_images=None,
     pbar=False,
     return_rays=False,
+    flow=None,
 ):
     """
     Args:
@@ -67,11 +68,14 @@ def predict_cameras(
         )
     if pred_x0 and not use_regression:
         rays_final = rays_intermediate[-2]
+
+    # TODO: check the dimension of flows and apply the correct flows
     pred_cam = ray_to_cam(
-        Rays.from_spatial(rays_final)[0],
+        Rays.from_spatial(rays_final)[0], # [1, 2, 6, 16, 16]
         crop_parameters,
         num_patches_x=num_patches_x,
         num_patches_y=num_patches_y,
+        flow=flow,
     )
 
     additional_predictions = []

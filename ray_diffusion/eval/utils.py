@@ -1,6 +1,20 @@
 import numpy as np
 import torch
 from pytorch3d.renderer import PerspectiveCameras
+from ray_diffusion.utils.rays import cameras_to_rays
+
+def angle_btw(v1, v2):
+    u1 = v1 / torch.linalg.norm(v1)
+    u2 = v2 / torch.linalg.norm(v2)
+    y = u1 - u2
+    x = u1 + u2
+    a0 = 2 * torch.arctan(torch.linalg.norm(y) / torch.linalg.norm(x))
+    if (not torch.signbit(a0)) or torch.signbit(torch.tensor(math.pi).to(v1.device) - a0):
+        return a0
+    elif torch.signbit(a0):
+        return 0.0
+    else:
+        return torch.tensor(math.pi).to(v1.device)
 
 
 def full_scene_scale(batch):
@@ -98,3 +112,15 @@ def compute_camera_center_error(R_pred, T_pred, R_gt, T_gt, gt_scene_scale):
 
     norms = np.ndarray.tolist(norm.detach().cpu().numpy())
     return norms, A_hat
+
+def compute_ray_direction_error(rays_pred, R_gt, T_gt, flow, patch_size=16):
+    cameras_gt = PerspectiveCameras(R=R_gt, T=T_gt).to('cpu')
+    gt_rays = cameras_to_rays(cameras=cameras_gt.to('cpu'),num_patches_x=patch_size,num_patches_y=patch_size,crop_parameters=None,flow=flow.to('cpu'))
+    # Rays_error = torch.mean((gt_rays.get_directions().to(rays_pred.device) - rays_pred.get_directions()) ** 2)
+    
+    # Angular loss for camera parameters
+    v1 = rays_pred.get_directions()
+    v2 = gt_rays.get_directions().to(rays_pred.device)
+    loss_angular = [angle_btw(v1[i], v2[i]) for i in range(len(v1))]
+    Rays_error = torch.nan_to_num(torch.stack(loss_angular), 0.0).mean()
+    return Rays_error

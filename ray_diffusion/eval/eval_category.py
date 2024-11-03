@@ -9,11 +9,13 @@ from ray_diffusion.dataset.co3d_v2 import Co3dDataset
 from ray_diffusion.eval.utils import (
     compute_angular_error_batch,
     compute_camera_center_error,
+    compute_ray_direction_error,
     full_scene_scale,
     n_to_np_rotations,
 )
 from ray_diffusion.inference.load_model import load_model
 from ray_diffusion.inference.predict import predict_cameras
+from pytorch3d.renderer import PerspectiveCameras
 
 
 @torch.no_grad()
@@ -44,8 +46,28 @@ def evaluate(
         R = batch["R"].to(device)[:num_images]
         T = batch["T"].to(device)[:num_images]
         crop_parameters = batch["crop_parameters"].to(device)[:num_images]
+        flow = batch["flow"].to(device)[:num_images]
+        principal_point = batch["principal_point"].to(device)[:num_images]
 
-        pred_cameras, additional_cams = predict_cameras(
+        # pred_cameras, additional_cams = predict_cameras(
+        #     model,
+        #     images,
+        #     device,
+        #     pred_x0=cfg.model.pred_x0,
+        #     crop_parameters=crop_parameters,
+        #     num_patches_x=cfg.model.num_patches_x,
+        #     num_patches_y=cfg.model.num_patches_y,
+        #     additional_timesteps=additional_timesteps,
+        #     calculate_intrinsics=calculate_intrinsics,
+        #     use_beta_tilde=use_beta_tilde,
+        #     normalize_moments=normalize_moments,
+        #     rescale_noise=rescale_noise,
+        #     use_regression=cfg.training.regression,
+        #     max_num_images=max_num_images,
+        #     flow=flow,
+        # )
+
+        pred_cameras, pred_rays, additional_cams, additional_rays = predict_cameras(
             model,
             images,
             device,
@@ -60,9 +82,12 @@ def evaluate(
             rescale_noise=rescale_noise,
             use_regression=cfg.training.regression,
             max_num_images=max_num_images,
+            return_rays=True,
+            flow=flow,
         )
 
         cameras_to_evaluate = additional_cams + [pred_cameras]
+        rays_to_evaluate = additional_rays + [pred_rays]
 
         all_cams_batch = dataset.get_data(
             sequence_name=instance, ids=np.arange(0, batch["n"]), no_images=True
@@ -70,9 +95,8 @@ def evaluate(
         gt_scene_scale = full_scene_scale(all_cams_batch)
         R_gt = R
         T_gt = T
-
         errors = []
-        for camera in cameras_to_evaluate:
+        for camera, rays_pred in zip(cameras_to_evaluate, rays_to_evaluate):
             R_pred = camera.R
             T_pred = camera.T
             f_pred = camera.focal_length
@@ -80,11 +104,14 @@ def evaluate(
             R_pred_rel = n_to_np_rotations(num_images, R_pred).cpu().numpy()
             R_gt_rel = n_to_np_rotations(num_images, batch["R"]).cpu().numpy()
             R_error = compute_angular_error_batch(R_pred_rel, R_gt_rel)
-
             CC_error, _ = compute_camera_center_error(
                 R_pred, T_pred, R_gt, T_gt, gt_scene_scale
             )
+            Rays_error = compute_ray_direction_error(rays_pred, R_gt, T_gt, flow, patch_size=16)
 
+            print(f"CC_error: {CC_error}")
+            print(f"R_error: {R_error}")
+            print(f"Rays_error: {Rays_error}")
             errors.append(
                 {
                     "R_pred": R_pred.detach().cpu().numpy().tolist(),
@@ -96,6 +123,7 @@ def evaluate(
                     "scene_scale": gt_scene_scale,
                     "R_error": R_error.tolist(),
                     "CC_error": CC_error,
+                    "Rays_error": Rays_error.tolist(),
                 }
             )
         results[instance] = errors

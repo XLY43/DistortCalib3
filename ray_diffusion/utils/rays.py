@@ -243,7 +243,7 @@ class Rays(object):
 def cameras_to_rays(
     cameras,
     crop_parameters,
-    flow,
+    flow=None,
     use_half_pix=True,
     use_plucker=True,
     num_patches_x=16,
@@ -265,6 +265,8 @@ def cameras_to_rays(
     crop_parameters_list = (
         crop_parameters if crop_parameters is not None else [None for _ in cameras]
     )
+    device = crop_parameters_list[0].device
+    # import pdb; pdb.set_trace()
     for camera, crop_param in zip(cameras, crop_parameters_list):
         xyd_grid = compute_ndc_coordinates(
             crop_parameters=crop_param,
@@ -280,7 +282,8 @@ def cameras_to_rays(
             )
         )
     unprojected = torch.stack(unprojected, dim=0)  # (N, P, 3)
-    origins = cameras.get_camera_center().unsqueeze(1)  # (N, 1, 3)
+    unprojected = unprojected.to(device)
+    origins = cameras.get_camera_center().unsqueeze(1).to(device)  # (N, 1, 3)
     origins = origins.repeat(1, num_patches_x * num_patches_y, 1)  # (N, P, 3)
     directions = unprojected - origins
     rays = Rays(
@@ -354,7 +357,6 @@ def rays_to_cameras(
     cam.R = R
     cam.T = -torch.matmul(R.transpose(1, 2), camera_centers.unsqueeze(2)).squeeze(2)
     return cam
-
 
 # https://www.reddit.com/r/learnmath/comments/v1crd7/linear_algebra_qr_to_ql_decomposition/
 def ql_decomposition(A):

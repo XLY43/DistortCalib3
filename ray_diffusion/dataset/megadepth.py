@@ -81,6 +81,7 @@ class MegaDepth(Dataset):
 
         data_names_clean = []
         for idx in range(len(data_names)-1):
+            import pdb; pdb.set_trace()
             intrinsics_path = data_names[idx]
             intrinsics = dict(np.load(intrinsics_path, allow_pickle=True))['intrinsics'].item()
             if len(intrinsics.keys()) != 0:

@@ -408,6 +408,8 @@ class Co3dDataset(Dataset):
         FL = []
         crop_parameters = []
         filenames = []
+
+        flow = None
         aug_type = random.choice(["barrel", "pincushion", "perspective"])
         # distort_grid = get_grid(aug_type)
         if aug_type == "barrel":
@@ -490,31 +492,35 @@ class Co3dDataset(Dataset):
                 image = image[:, : self.img_size, : self.img_size]
 
                 # Distort image
-                if aug_type == "barrel" or aug_type == "pincushion":
-                    image_distort, field_x, field_y = aug_forms(image.unsqueeze(0))
-                    grid = kornia.utils.create_meshgrid(self.img_size, self.img_size, False).reshape(1, -1, 2) # batch size is 1
-                    warped_grid = torch.stack([field_x, field_y], dim=-1)
-                    grid = 2 * grid / (self.img_size - 1) - 1
-                    grid = grid.reshape(1, self.img_size, self.img_size, 2)
-                    flow = (grid - warped_grid).reshape(1, self.img_size, self.img_size, 2)
-                    flow[flow.abs() > 0.3] = 0
-                    image_distort = image_distort.squeeze(0)
-                    flow = flow.squeeze(0).permute(2, 0, 1)
+                if flow is None:
+                    if aug_type == "barrel" or aug_type == "pincushion":
+                        image_distort, field_x, field_y = aug_forms(image.unsqueeze(0))
+                        grid = kornia.utils.create_meshgrid(self.img_size, self.img_size, False).reshape(1, -1, 2) # batch size is 1
+                        warped_grid = torch.stack([field_x, field_y], dim=-1)
+                        grid = 2 * grid / (self.img_size - 1) - 1
+                        grid = grid.reshape(1, self.img_size, self.img_size, 2)
+                        flow = (grid - warped_grid).reshape(1, self.img_size, self.img_size, 2)
+                        flow[flow.abs() > 0.3] = 0
+                        image_distort = image_distort.squeeze(0)
+                        flow = flow.squeeze(0).permute(2, 0, 1)
+                    else:
+                        grid = kornia.utils.create_meshgrid(self.img_size, self.img_size, False).reshape(1, -1, 2) # batch size is 1
+                        out = aug_forms(image, grid)
+                        image_distort = out[0]
+                        warped_grid = out[1].reshape(1, -1, 2)
+                        grid = 2 * grid/ (self.img_size - 1) - 1
+                        warped_grid = 2 * warped_grid/ (self.img_size - 1) - 1
+                        flow = (warped_grid - grid).reshape(1, self.img_size, self.img_size, 2)
+                        image_distort = image_distort.squeeze(0)
+                        flow = flow.squeeze(0).permute(2, 0, 1)
                 else:
-                    grid = kornia.utils.create_meshgrid(self.img_size, self.img_size, False).reshape(1, -1, 2) # batch size is 1
-                    out = aug_forms(image, grid)
-                    image_distort = out[0]
-                    warped_grid = out[1].reshape(1, -1, 2)
-                    grid = 2 * grid/ (self.img_size - 1) - 1
-                    warped_grid = 2 * warped_grid/ (self.img_size - 1) - 1
-                    flow = (warped_grid - grid).reshape(1, self.img_size, self.img_size, 2)
-                    image_distort = image_distort.squeeze(0)
-                    flow = flow.squeeze(0).permute(2, 0, 1)
+                    warp_locs = grid.reshape(1, self.img_size, self.img_size, 2) + (-flow.permute(1, 2, 0).unsqueeze(0).clip(-1,1))
+                    image_distort = torch.nn.functional.grid_sample(image.unsqueeze(0), warp_locs, mode="bilinear", padding_mode='zeros').squeeze(0)
+
                 ######
                 # DEBUG visualizations
                 # torchvision.utils.save_image(image[:, :, :], "image.png")
                 # torchvision.utils.save_image(image_distort[:, :, :], "image_d.png")
-                
                 ######
                 # _, canny_mask = kornia.filters.canny(image_distort.unsqueeze(0))
                 images_d.append(image_distort[:, : self.img_size, : self.img_size])
