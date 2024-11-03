@@ -18,11 +18,14 @@ import omegaconf
 import torch
 from accelerate import Accelerator
 from pytorch3d.renderer import PerspectiveCameras
+from pytorch3d.renderer.fisheyecameras import FishEyeCameras
 
 import wandb
 from ray_diffusion.dataset.co3d_v2 import Co3dDataset
 from ray_diffusion.dataset.tartanair import TartanAir, AirSampler
 from ray_diffusion.dataset.megadepth import MegaDepth
+from ray_diffusion.dataset.atek_adaptor import build_train_loader
+
 from ray_diffusion.model.diffuser import RayDiffuser
 from ray_diffusion.model.scheduler import NoiseScheduler
 from ray_diffusion.utils.normalize import normalize_cameras_batch
@@ -31,6 +34,7 @@ from ray_diffusion.utils.visualization import (
     create_plotly_cameras_visualization,
     create_training_visualizations,
 )
+from ray_diffusion.eval.utils import angle_btw
 
 os.umask(000)  # Default to 777 permissions
 
@@ -153,6 +157,10 @@ class Trainer(object):
                 pin_memory=True,
                 drop_last=True,
             )
+        elif self.dataset_name == "aria":
+            self.train_dataloader = build_train_loader(
+                shuffle_tars_flag=True,
+            )
 
         self.model, self.optimizer, self.train_dataloader, self.optimizer_flow = self.accelerator.prepare(
             self.model, self.optimizer, self.train_dataloader, self.optimizer_flow
@@ -204,7 +212,7 @@ class Trainer(object):
         print("Resuming from checkpoint. ")
         # self.load_model("/ocean/projects/cis240055p/liuyuex/gemma/DistortCalib3/pretrain/models/co3d_diffusion/checkpoints/ckpt_00450000.pth", load_metadata=False)
         # self.load_model("/ocean/projects/cis240055p/liuyuex/gemma/DistortCalib/output_3x3_world_no_edge2/checkpoints/ckpt_00035000.pth", load_metadata=False)
-        self.load_model("/ocean/projects/cis240055p/liuyuex/gemma/DistortCalib3/output_world_distort/checkpoints/ckpt_00040000.pth", load_metadata=False)
+        self.load_model("/ocean/projects/cis240055p/liuyuex/gemma/DistortCalib3/output_co3d_distort/checkpoints/ckpt_00050000.pth", load_metadata=False)
         self.iteration = 0
 
         if self.resume:
@@ -249,7 +257,6 @@ class Trainer(object):
                 self.optimizer.zero_grad()
                 with torch.cuda.amp.autocast(enabled=self.mixed_precision):
                     images = batch["image_d"].to(self.device)
-                    
                     # if self.dataset_name == "co3d":
                     focal_lengths = batch["focal_length"].to(self.device)
                     crop_params = batch["crop_parameters"].to(self.device)
@@ -258,18 +265,36 @@ class Trainer(object):
                     T = batch["T"].to(self.device)
                     flows = batch["flow"].to(self.device)
 
-                    cameras_og = [
-                        PerspectiveCameras(
-                            focal_length=focal_lengths[b],
-                            principal_point=principal_points[b],
-                            R=R[b],
-                            T=T[b],
-                            device=self.device,
-                        )
-                        for b in range(self.batch_size)
-                    ]
+                    if self.dataset_name == "aria":
+                        radial_params = batch["radial_params"].to(self.device)
+                        tangential_params = batch["tangential_params"].to(self.device)
+                        thin_prism_params = batch["thinprism_params"].to(self.device)
+                        cameras_og = [
+                                FishEyeCameras(
+                                    focal_length=focal_lengths[b],
+                                    principal_point=principal_points[b],
+                                    R=R[b],
+                                    T=T[b],
+                                    radial_params=radial_params[b],
+                                    tangential_params=tangential_params[b],
+                                    thin_prism_params=thin_prism_params[b],
+                                    device=self.device,
+                                )
+                                for b in range(self.batch_size)
+                            ]
+                    else:
+                        cameras_og = [
+                            PerspectiveCameras(
+                                focal_length=focal_lengths[b],
+                                principal_point=principal_points[b],
+                                R=R[b],
+                                T=T[b],
+                                device=self.device,
+                            )
+                            for b in range(self.batch_size)
+                        ]
 
-                    if self.num_images == 1:
+                    if self.num_images == 1 or self.dataset_name == "aria":
                         cameras = cameras_og
                     else:
                         cameras, _ = normalize_cameras_batch(
@@ -277,6 +302,7 @@ class Trainer(object):
                             scale=self.translation_scale,
                             normalize_first_camera=self.normalize_first_camera,
                         )
+
                     # Now that cameras are normalized, fix shapes of camera parameters
                     if self.load_extra_cameras or self.random_num_images:
                         if self.random_num_images:
@@ -286,23 +312,37 @@ class Trainer(object):
 
                         # The correct number of images is already loaded.
                         # Only need to modify these camera parameters shapes.
-                        # focal_lengths = focal_lengths[:, :num_images]
                         crop_params = crop_params[:, :num_images]
                         R = R[:, :num_images]
                         T = T[:, :num_images]
                         images = images[:, :num_images]
                         flows = flows[:, :num_images]
 
-                        cameras = [
-                            PerspectiveCameras(
-                                focal_length=cameras[b].focal_length[:num_images],
-                                principal_point=cameras[b].principal_point[:num_images],
-                                R=cameras[b].R[:num_images],
-                                T=cameras[b].T[:num_images],
-                                device=self.device,
-                            )
-                            for b in range(self.batch_size)
-                        ]
+                        if self.dataset_name == "aria":
+                            cameras = [
+                                FishEyeCameras(
+                                    focal_length=cameras[b].focal[:num_images],
+                                    principal_point=cameras[b].principal_point[:num_images],
+                                    R=cameras[b].R[:num_images],
+                                    T=cameras[b].T[:num_images],
+                                    radial_params=cameras[b].radial_params[:num_images],
+                                    tangential_params=cameras[b].tangential_params[:num_images],
+                                    thin_prism_params=cameras[b].thin_prism_params[:num_images],
+                                    # device=self.device,
+                                )
+                                for b in range(self.batch_size)
+                            ]
+                        else:
+                            cameras = [
+                                PerspectiveCameras(
+                                    focal_length=cameras[b].focal_length[:num_images],
+                                    principal_point=cameras[b].principal_point[:num_images],
+                                    R=cameras[b].R[:num_images],
+                                    T=cameras[b].T[:num_images],
+                                    device=self.device,
+                                )
+                                for b in range(self.batch_size)
+                            ]
 
                     if self.regression:
                         low = self.get_module().noise_scheduler.max_timesteps - 1
@@ -322,13 +362,21 @@ class Trainer(object):
                         #     print("flow", flow.shape)
                         # except:
                         #     import pdb; pdb.set_trace()
-                        r = cameras_to_rays(
-                            cameras=camera,
-                            num_patches_x=self.num_patches_x,
-                            num_patches_y=self.num_patches_y,
-                            crop_parameters=crop_param,
-                            flow=flow,
-                        )
+                        if self.dataset_name == "aria":
+                            r = cameras_to_rays(
+                                cameras=camera,
+                                num_patches_x=self.num_patches_x,
+                                num_patches_y=self.num_patches_y,
+                                crop_parameters=crop_param,
+                            )
+                        else:
+                            r = cameras_to_rays(
+                                cameras=camera,
+                                num_patches_x=self.num_patches_x,
+                                num_patches_y=self.num_patches_y,
+                                crop_parameters=crop_param,
+                                flow=flow,
+                            )
                         rays.append(
                             r.to_spatial(include_ndc_coordinates=self.append_ndc)
                         )
@@ -349,7 +397,15 @@ class Trainer(object):
                     else:
                         target = eps
                     loss = torch.mean((eps_pred - target) ** 2)
-                    
+
+                    # Angular loss for camera parameters
+                    v1 = eps_pred.reshape(-1, 6)
+                    v2 = target.reshape(-1, 6)
+                    loss_angular = [angle_btw(v1[i], v2[i]) for i in range(len(v1))]
+                    loss_angular = torch.nan_to_num(torch.stack(loss_angular), 0.0).mean()
+                    loss = loss + loss_angular * 0.8
+
+                    # flow loss
                     flow_pred = self.model(rays=eps_pred, distort_pred=True)
                     loss_flow = torch.mean((flow_pred - flows) ** 2)
                     loss += loss_flow
@@ -366,7 +422,7 @@ class Trainer(object):
 
                 if self.accelerator.is_main_process:
                     if self.iteration % 10 == 0:
-                        self.log_info(loss, loss_flow, t0)
+                        self.log_info(loss, loss_angular, loss_flow, t0)
 
                     if self.iteration % self.interval_visualize == 0:
                         self.visualize(
@@ -443,7 +499,7 @@ class Trainer(object):
                 if checkpoint_iteration % self.interval_delete_checkpoint != 0:
                     os.remove(checkpoint_file)
 
-    def log_info(self, loss, loss_flow, t0):
+    def log_info(self, loss, loss_angular, loss_flow, t0):
         if self.start_time is None:
             self.start_time = time.time()
         time_elapsed = round(time.time() - self.start_time)
@@ -456,6 +512,7 @@ class Trainer(object):
             f"Iter: {self.iteration}/{self.max_iterations}",
             f"Epoch: {self.epoch}",
             f"Loss: {loss.item():.4f}",
+            f"Loss_angular: {loss_angular.item():.4f}",
             f"Loss_flow: {loss_flow.item():.4f}",
             f"Elap: {str(datetime.timedelta(seconds=time_elapsed))}",
             f"Rem: {str(datetime.timedelta(seconds=time_remaining))}",
@@ -466,6 +523,7 @@ class Trainer(object):
         wandb.log(
             {
                 "loss": loss.item(),
+                "loss_angular": loss_angular.item(),
                 "loss_flow": loss_flow.item(),
                 "iter_time": time.time() - t0,
                 "lr": self.lr,
