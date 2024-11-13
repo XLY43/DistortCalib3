@@ -282,4 +282,35 @@ def create_plotly_cameras_visualization(cameras_gt, cameras_pred, num):
         )
         fig.data[i + num_frames].line.width = 4
 
+
+
+import io
+import os
+import numpy as np
+import torch
+from PIL import Image
+
+EXTENSION_LIST = [".jpg", ".jpeg", ".png"]
+import matplotlib.pyplot as plt
+
+def plot_arrow_on_image(rgb_image, arrow_field, arrow_scale=0.08, sparse_factor=10, save_path=None):
+
+    height, width, _ = rgb_image.shape
+    
+    overlay_image = np.copy(rgb_image)
+
+    arrow_scale *= min(height, width)
+    
+    for y in range(0, height, sparse_factor):  
+        for x in range(0, width, sparse_factor):
+            dx, dy, _ = arrow_field[:, y, x]  
+            plt.arrow(x, y, dx * arrow_scale, dy * arrow_scale, color='yellow', head_width=3, head_length=2)
+    
+    plt.imshow(overlay_image)
+    plt.axis('off')  
+    
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
+    else:
+        plt.show()
     return fig
